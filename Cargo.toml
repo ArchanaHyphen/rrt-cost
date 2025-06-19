@@ -1,5 +1,5 @@
 [package]
-name = "rrt"
+name = "rrt-cost"
 # When publishing a new version:
 # - Create "v0.x.y" git tag
 # - Push the above tag (run `git push origin --tags`)
