@@ -15,7 +15,7 @@
 */
 
 #![doc = include_str!("../README.md")]
-#![warn(missing_debug_implementations, missing_docs, rust_2018_idioms)]
+#![warn(missing_docs)]
 
 use kdtree::distance::squared_euclidean;
 use num_traits::float::Float;
@@ -82,21 +82,6 @@ where
     fn get_nearest_index(&self, q: &[N]) -> usize {
         *self.kdtree.nearest(q, 1, &squared_euclidean).unwrap()[0].1
     }
-    fn get_cheapest_index<FC>(&self, q: &[N], cost: &mut FC) -> usize
-    where
-        FC: FnMut(&[N]) -> f32,
-    {
-        let mut nearest_index = self.get_nearest_index(q);
-        let mut nearest_cost = cost(&self.vertices[nearest_index].data);
-        for (index, vertex) in self.vertices.iter().enumerate() {
-            let current_cost = cost(&vertex.data);
-            if current_cost < nearest_cost {
-                nearest_index = index;
-                nearest_cost = current_cost;
-            }
-        }
-        nearest_index
-    }
 
     fn extend<FF, FC>(
         &mut self,
@@ -111,7 +96,7 @@ where
         FC: FnMut(&[N]) -> f32,
     {
         assert!(extend_length > N::zero());
-        let nearest_index = self.get_cheapest_index(q_target, cost);
+        let nearest_index = self.get_nearest_index(q_target);
         let nearest_q = &self.vertices[nearest_index].data;
         let diff_dist = squared_euclidean(q_target, nearest_q).sqrt();
         let q_new = if diff_dist < extend_length {
