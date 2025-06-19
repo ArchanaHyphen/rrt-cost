@@ -15,7 +15,7 @@
 */
 
 #![doc = include_str!("../README.md")]
-#![warn(missing_docs)]
+#![warn(missing_debug_implementations, missing_docs, rust_2018_idioms)]
 
 use kdtree::distance::squared_euclidean;
 use num_traits::float::Float;
@@ -82,12 +82,36 @@ where
     fn get_nearest_index(&self, q: &[N]) -> usize {
         *self.kdtree.nearest(q, 1, &squared_euclidean).unwrap()[0].1
     }
-    fn extend<FF>(&mut self, q_target: &[N], extend_length: N, is_free: &mut FF) -> ExtendStatus
+    fn get_cheapest_index<FC>(&self, q: &[N], cost: &mut FC) -> usize
+    where
+        FC: FnMut(&[N]) -> f32,
+    {
+        let mut nearest_index = self.get_nearest_index(q);
+        let mut nearest_cost = cost(&self.vertices[nearest_index].data);
+        for (index, vertex) in self.vertices.iter().enumerate() {
+            let current_cost = cost(&vertex.data);
+            if current_cost < nearest_cost {
+                nearest_index = index;
+                nearest_cost = current_cost;
+            }
+        }
+        nearest_index
+    }
+
+    fn extend<FF, FC>(
+        &mut self,
+        q_target: &[N],
+        extend_length: N,
+        is_free: &mut FF,
+        cost: &mut FC,
+        delta_cost: f32,
+    ) -> ExtendStatus
     where
         FF: FnMut(&[N]) -> bool,
+        FC: FnMut(&[N]) -> f32,
     {
         assert!(extend_length > N::zero());
-        let nearest_index = self.get_nearest_index(q_target);
+        let nearest_index = self.get_cheapest_index(q_target, cost);
         let nearest_q = &self.vertices[nearest_index].data;
         let diff_dist = squared_euclidean(q_target, nearest_q).sqrt();
         let q_new = if diff_dist < extend_length {
@@ -99,8 +123,8 @@ where
                 .map(|(near, target)| *near + (*target - *near) * extend_length / diff_dist)
                 .collect::<Vec<_>>()
         };
-        debug!("q_new={q_new:?}");
-        if is_free(&q_new) {
+        let nearest_cost_delta = (cost(&nearest_q) - cost(&q_new)).abs();
+        if is_free(&q_new) && nearest_cost_delta <= delta_cost {
             let new_index = self.add_vertex(&q_new);
             self.add_edge(nearest_index, new_index);
             if squared_euclidean(&q_new, q_target).sqrt() < extend_length {
@@ -110,15 +134,25 @@ where
             debug!("advanced to {q_target:?}");
             return ExtendStatus::Advanced(new_index);
         }
+        debug!("q_new={q_new:?}");
+
         ExtendStatus::Trapped
     }
-    fn connect<FF>(&mut self, q_target: &[N], extend_length: N, is_free: &mut FF) -> ExtendStatus
+    fn connect<FF, FC>(
+        &mut self,
+        q_target: &[N],
+        extend_length: N,
+        is_free: &mut FF,
+        cost: &mut FC,
+        cost_delta: f32,
+    ) -> ExtendStatus
     where
         FF: FnMut(&[N]) -> bool,
+        FC: FnMut(&[N]) -> f32,
     {
         loop {
             debug!("connecting...{q_target:?}");
-            match self.extend(q_target, extend_length, is_free) {
+            match self.extend(q_target, extend_length, is_free, cost, cost_delta) {
                 ExtendStatus::Trapped => return ExtendStatus::Trapped,
                 ExtendStatus::Reached(index) => return ExtendStatus::Reached(index),
                 ExtendStatus::Advanced(_) => {}
@@ -137,35 +171,39 @@ where
 }
 
 /// search the path from start to goal which is free, using random_sample function
-pub fn dual_rrt_connect<FF, FR, N>(
+pub fn dual_rrt_connect<FF, FR, FC, N>(
     start: &[N],
     goal: &[N],
     mut is_free: FF,
+    mut cost: FC,
     random_sample: FR,
     extend_length: N,
     num_max_try: usize,
 ) -> Result<Vec<Vec<N>>, String>
 where
     FF: FnMut(&[N]) -> bool,
+    FC: FnMut(&[N]) -> f32,
     FR: Fn() -> Vec<N>,
     N: Float + Debug,
 {
     assert_eq!(start.len(), goal.len());
     let mut tree_a = Tree::new("start", start.len());
     let mut tree_b = Tree::new("goal", start.len());
+    let cost_delta = (cost(start) - cost(goal)).abs();
     tree_a.add_vertex(start);
     tree_b.add_vertex(goal);
     for _ in 0..num_max_try {
         debug!("tree_a = {:?}", tree_a.vertices.len());
         debug!("tree_b = {:?}", tree_b.vertices.len());
         let q_rand = random_sample();
-        let extend_status = tree_a.extend(&q_rand, extend_length, &mut is_free);
+        let extend_status =
+            tree_a.extend(&q_rand, extend_length, &mut is_free, &mut cost, cost_delta);
         match extend_status {
             ExtendStatus::Trapped => {}
             ExtendStatus::Advanced(new_index) | ExtendStatus::Reached(new_index) => {
                 let q_new = &tree_a.vertices[new_index].data;
                 if let ExtendStatus::Reached(reach_index) =
-                    tree_b.connect(q_new, extend_length, &mut is_free)
+                    tree_b.connect(q_new, extend_length, &mut is_free, &mut cost, cost_delta)
                 {
                     let mut a_all = tree_a.get_until_root(new_index);
                     let mut b_all = tree_b.get_until_root(reach_index);
@@ -184,13 +222,16 @@ where
 }
 
 /// select random two points, and try to connect.
-pub fn smooth_path<FF, N>(
+pub fn smooth_path<FF, FC, N>(
     path: &mut Vec<Vec<N>>,
     mut is_free: FF,
+    mut cost: FC,
+    cost_delta: f32,
     extend_length: N,
     num_max_try: usize,
 ) where
     FF: FnMut(&[N]) -> bool,
+    FC: FnMut(&[N]) -> f32,
     N: Float + Debug,
 {
     if path.len() < 3 {
@@ -224,7 +265,8 @@ pub fn smooth_path<FF, N>(
                     .zip(point2.iter())
                     .map(|(near, target)| *near + (*target - *near) * extend_length / diff_dist)
                     .collect::<Vec<_>>();
-                if !is_free(&check_point) {
+                let cost_diff = (cost(&base_point) - cost(&check_point)).abs();
+                if !is_free(&check_point) && cost_diff > cost_delta {
                     // trapped
                     is_searching = false;
                 } else {
