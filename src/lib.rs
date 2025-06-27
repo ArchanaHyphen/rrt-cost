@@ -233,7 +233,8 @@ pub fn smooth_path<FF, FC, N>(
         let mut is_searching = true;
         while is_searching {
             let diff_dist = squared_euclidean(&base_point, &point2).sqrt();
-            if diff_dist < extend_length {
+            let diff_cost = (cost(&base_point) - cost(&point2)).abs();
+            if diff_dist < extend_length && diff_cost <= cost_delta {
                 // reached!
                 // remove path[ind1+1] ... path[ind2-1]
                 let remove_index = ind1 + 1;
@@ -250,8 +251,8 @@ pub fn smooth_path<FF, FC, N>(
                     .zip(point2.iter())
                     .map(|(near, target)| *near + (*target - *near) * extend_length / diff_dist)
                     .collect::<Vec<_>>();
-                let cost_diff = (cost(&base_point) - cost(&check_point)).abs();
-                if !is_free(&check_point) && cost_diff > cost_delta {
+                let diff_cost = (cost(&base_point) - cost(&check_point)).abs();
+                if !is_free(&check_point) || diff_cost > cost_delta {
                     // trapped
                     is_searching = false;
                 } else {
@@ -270,6 +271,7 @@ fn it_works() {
         &[-1.2, 0.0],
         &[1.2, 0.0],
         |p: &[f64]| !(p[0].abs() < 1.0 && p[1].abs() < 1.0),
+        |p: &[f64]| 0.0,
         || {
             let between = Uniform::new(-2.0, 2.0);
             let mut rng = rand::thread_rng();
@@ -284,6 +286,8 @@ fn it_works() {
     smooth_path(
         &mut result,
         |p: &[f64]| !(p[0].abs() < 1.0 && p[1].abs() < 1.0),
+        |p: &[f64]| 0.0,
+        0.0,
         0.2,
         100,
     );
